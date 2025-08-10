@@ -24,12 +24,16 @@ apply_config()
 # ===================== Gate de Login =====================
 user = auth.require_login()
 
+# Aba padrão após login: Relatórios
+if "menu" not in st.session_state:
+    st.session_state["menu"] = "Relatórios"
+
 # ===================== Reset de layout pós-login =====================
 st.markdown("""
 <style>
   header[data-testid="stHeader"]   { display:block !important; }
   section[data-testid="stSidebar"] { display:block !important; }
-  .block-container { padding-top: 1rem !important; padding-bottom: 2rem !important; }
+  .block-container { padding-top: 1rem !important; padding-bottom: 2 rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -153,7 +157,7 @@ with st.sidebar:
         """,
         unsafe_allow_html=True
     )
-    if st.button("🚪", key="logout-small", help="Sair"):  # ícone com tooltip
+    if st.button("🚪", key="logout-small", help="Sair"):
         auth.logout()
         st.rerun()
     st.markdown("</div></div>", unsafe_allow_html=True)  # fecha logout-btn-small + user-row
@@ -161,12 +165,18 @@ with st.sidebar:
 
     st.markdown("---")
 
+    # ===== Menu: mantém seleção na sessão e inicia em "Relatórios" =====
     options = ["Frota", "Ordens de Serviço", "Manutenção", "Relatórios"]
     if user.get("role") == "admin":
         options.append("Admin (Usuários)")
-    menu = st.radio(label="", options=options, index=0)
+
+    default_index = options.index(st.session_state["menu"]) if st.session_state["menu"] in options else 0
+    selecionado = st.radio(label="", options=options, index=default_index)
+    st.session_state["menu"] = selecionado
 
 # ===================== Roteamento =====================
+menu = st.session_state.get("menu", "Relatórios")
+
 if menu == "Frota":
     cadastro_frota.show()
 elif menu == "Ordens de Serviço":
