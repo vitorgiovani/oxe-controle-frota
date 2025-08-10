@@ -1,133 +1,261 @@
-import streamlit as st
-import pandas as pd
-import sqlite3
-from PIL import Image
+# modules/cadastro_frota.py
 import os
+import re
+import sqlite3
+import pandas as pd
+import streamlit as st
+from datetime import date, datetime
 
-DB_PATH = "frota.db"
-FOTOS_PATH = "fotos_frota"
+DB_PATH   = "frota.db"
+TABLE     = "frota"
+FOTOS_DIR = "fotos_frota"
 
+# ========= Infra =========
 @st.cache_resource
 def get_conn(path=DB_PATH):
-    return sqlite3.connect(path, check_same_thread=False)
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
 
-conn = get_conn()
+def _fmt_date(d):
+    if isinstance(d, date):
+        return d.strftime("%Y-%m-%d")
+    if isinstance(d, datetime):
+        return d.date().strftime("%Y-%m-%d")
+    return str(d) if d else None
 
-os.makedirs(FOTOS_PATH, exist_ok=True)
-
-def show(com_expansor=False):
+def _inject_css():
     st.markdown("""
-        <style>
-        .stApp {
-            background-color: #004d00 !important; /* verde escuro */
-            color: white !important;
-        }
-        header[data-testid="stHeader"] {
-            background-color: #004d00 !important; /* topo com mesmo verde do corpo */
-        }
-        .stTabs [data-baseweb="tab"] {
-            background-color: #006400 !important; /* verde */
-            color: white !important;
-            font-weight: bold;
-            font-size: 16px;
-        }
-        .stTextInput input,
-        .stNumberInput input,
-        .stSelectbox div[data-baseweb="select"] {
-            background-color: white !important;
-            color: black !important;
-        }
-        .stButton>button {
-            background-color: #ffffff !important;
-            color: #004d00 !important;
-            font-weight: bold;
-        }
-        .stDataFrame thead tr th {
-            background-color: #d9f2d9 !important;
-            color: black !important;
-        }
-        .stDataFrame tbody tr td {
-            background-color: #eaf8ea !important;
-            color: black !important;
-        }
-        </style>
+    <style>
+      .stApp { background-color: #004d00 !important; color: #ffffff !important; }
+      header[data-testid="stHeader"] { background-color: #004d00 !important; }
+      .stTabs [data-baseweb="tab"] {
+        background-color: #006400 !important; color: #ffffff !important;
+        font-weight: 700; font-size: 16px;
+      }
+      .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"],
+      .stDateInput input, textarea, .stFileUploader {
+        background-color: #ffffff !important; color: #000000 !important;
+      }
+      .stButton>button {
+        background-color: #ffffff !important; color: #004d00 !important; font-weight: 700;
+        border: 0; border-radius: 8px;
+      }
+      .stButton>button:hover { filter: brightness(0.95); }
+      .stDataFrame thead tr th { background-color: #d9f2d9 !important; color: #000000 !important; }
+      .stDataFrame tbody tr td { background-color: #eaf8ea !important; color: #000000 !important; }
+    </style>
     """, unsafe_allow_html=True)
+
+def _ensure_table(conn: sqlite3.Connection):
+    # CHECKs simples (ano) — regex em SQLite não é nativo, então validamos a PLACA/CHASSI no app.
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS {TABLE} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            num_frota TEXT UNIQUE,
+            classe_mecanica TEXT,
+            classe_operacional TEXT,
+            placa TEXT UNIQUE,
+            modelo TEXT,
+            marca TEXT,
+            ano_fabricacao INTEGER CHECK(ano_fabricacao IS NULL OR (ano_fabricacao >= 1980 AND ano_fabricacao <= 2100)),
+            chassi TEXT,
+            status TEXT
+        );
+    """)
+    conn.commit()
+    os.makedirs(FOTOS_DIR, exist_ok=True)
+
+# ========= Validações =========
+_PLACA_LEGADO   = re.compile(r"^[A-Z]{3}\d{4}$")            # AAA1234
+_PLACA_MERCOSUL = re.compile(r"^[A-Z]{3}\d[A-Z]\d{2}$")     # ABC1D23
+_CHASSI_RE      = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$")      # 17 chars, sem I,O,Q
+
+def _validar_placa(placa: str) -> bool:
+    if not placa or len(placa) != 7: 
+        return False
+    placa = placa.upper()
+    return bool(_PLACA_LEGADO.match(placa) or _PLACA_MERCOSUL.match(placa))
+
+def _validar_chassi(chassi: str) -> bool:
+    if not chassi:
+        return True  # opcional
+    c = chassi.replace(" ", "").upper()
+    return bool(_CHASSI_RE.match(c))
+
+def _coerce_ano(v) -> int | None:
+    try:
+        iv = int(v)
+    except Exception:
+        return None
+    return iv if 1980 <= iv <= 2100 else None
+
+def _normalize_str(s: str, upper=False) -> str:
+    if s is None: 
+        return ""
+    s = str(s).strip()
+    return s.upper() if upper else s
+
+# ========= UI =========
+def show(com_expansor: bool = False):
+    _inject_css()
+    conn = get_conn()
+    _ensure_table(conn)
 
     st.subheader("🚛 Cadastro de Frota")
 
-    aba1, aba2 = st.tabs(["➕ Nova Frota", "🔍 Frotas Cadastradas"])
+    aba_form, aba_lista = st.tabs(["➕ Nova Frota", "📋 Frotas Cadastradas"])
 
-    with aba1:
+    # --- Aba 1: Nova Frota ---
+    with aba_form:
         with st.form("form_frota"):
             col1, col2 = st.columns(2)
             with col1:
-                num_frota = st.text_input("Nº Frota", placeholder="Ex: FR-06", key="num_frota")
-                classe_mec = st.text_input("Classe Mecânica", placeholder="Ex: CAMINHÃO TRATOR", key="classe_mec")
-                classe_op = st.text_input("Classe Operacional", placeholder="Ex: CAVALO MECÂNICO", key="classe_op")
-                placa = st.text_input("Placa", placeholder="Ex: RNE8A74", key="placa").upper()
+                num_frota = st.text_input("Nº da Frota", placeholder="Ex: FR-06")
+                classe_mec = st.text_input("Classe Mecânica", placeholder="Ex: CAMINHÃO TRATOR")
+                classe_op  = st.text_input("Classe Operacional", placeholder="Ex: CAVALO MECÂNICO")
+                placa = st.text_input("Placa", placeholder="Ex: RNE8A74")
             with col2:
-                modelo = st.text_input("Modelo", placeholder="Ex: FH540 6X4T_ CE", key="modelo")
-                marca = st.text_input("Marca", placeholder="Ex: VOLVO", key="marca")
-                ano = st.number_input("Ano de Fabricação", min_value=1990, max_value=2050, step=1, key="ano")
-                chassi = st.text_input("Chassi", placeholder="Ex: 9BVRG40D5ME899353", key="chassi")
-            foto = st.file_uploader("Foto do Veículo", type=["jpg", "jpeg", "png"], key="foto")
+                modelo = st.text_input("Modelo", placeholder="Ex: FH540 6X4T CE")
+                marca  = st.text_input("Marca", placeholder="Ex: VOLVO")
+                ano    = st.number_input("Ano de Fabricação", min_value=1980, max_value=2100, step=1)
+                chassi = st.text_input("Chassi (VIN)", placeholder="Ex: 9BVRG40D5ME899353")
+
+            col3, col4 = st.columns(2)
+            with col3:
+                status_opt = st.selectbox("Status do veículo", ["Ativo", "Inativo"], index=0)
+            with col4:
+                foto = st.file_uploader("Foto do Veículo (opcional)", type=["jpg","jpeg","png"])
 
             submitted = st.form_submit_button("Salvar")
 
         if submitted:
-            conn.execute("""
-                INSERT OR REPLACE INTO frota (
-                    num_frota, classe_mecanica, classe_operacional, placa,
-                    modelo, marca, ano_fabricacao, chassi
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (num_frota, classe_mec, classe_op, placa, modelo, marca, ano, chassi))
-            conn.commit()
+            # normalização + tipagem
+            payload = {
+                "num_frota": _normalize_str(num_frota, upper=True),
+                "classe_mecanica": _normalize_str(classe_mec),
+                "classe_operacional": _normalize_str(classe_op),
+                "placa": _normalize_str(placa, upper=True),
+                "modelo": _normalize_str(modelo),
+                "marca": _normalize_str(marca, upper=True),
+                "ano_fabricacao": _coerce_ano(ano),
+                "chassi": _normalize_str(chassi, upper=True).replace(" ", ""),
+                "status": status_opt,
+            }
 
-            if foto:
-                with open(os.path.join(FOTOS_PATH, f"{placa}.jpg"), "wb") as f:
-                    f.write(foto.read())
+            # ===== Validações fortes =====
+            erros = []
+            if not payload["num_frota"] and not payload["placa"]:
+                erros.append("Informe pelo menos **Nº da Frota** ou **Placa**.")
+            if payload["placa"] and not _validar_placa(payload["placa"]):
+                erros.append("**Placa** inválida. Use formato AAA1234 (antigo) ou ABC1D23 (Mercosul).")
+            if payload["chassi"] and not _validar_chassi(payload["chassi"]):
+                erros.append("**Chassi** inválido. Deve ter 17 caracteres alfanuméricos (sem I, O, Q).")
+            if ano and payload["ano_fabricacao"] is None:
+                erros.append("**Ano de Fabricação** fora do intervalo permitido (1980–2100).")
 
-            st.success("Frota salva com sucesso!")
+            if erros:
+                for e in erros:
+                    st.error(e)
+            else:
+                # chave de upsert: prioriza num_frota; se vazio, usa placa
+                upsert_key = "num_frota" if payload["num_frota"] else "placa"
+                cols = ", ".join(payload.keys())
+                qs   = ", ".join(["?"] * len(payload))
+                set_clause = ", ".join([f"{k}=excluded.{k}" for k in payload.keys() if k != upsert_key])
 
-    with aba2:
-        df = pd.read_sql("SELECT * FROM frota", conn)
+                sql = f"""
+                    INSERT INTO {TABLE} ({cols}) VALUES ({qs})
+                    ON CONFLICT({upsert_key}) DO UPDATE SET {set_clause};
+                """
+                try:
+                    conn.execute(sql, list(payload.values()))
+                    conn.commit()
+                except sqlite3.IntegrityError as e:
+                    st.error(f"Conflito de dados: {e}. Verifique se **Nº da Frota** ou **Placa** já existem em outro registro.")
+                else:
+                    if foto and payload["placa"]:
+                        with open(os.path.join(FOTOS_DIR, f"{payload['placa']}.jpg"), "wb") as f:
+                            f.write(foto.read())
+                    st.success("Frota salva/atualizada com sucesso!")
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            filtro_frota = st.text_input("Nº Frota", key="filtro_frota")
-        with col2:
-            filtro_mec = st.text_input("Classe Mecânica", key="filtro_mec")
-        with col3:
-            filtro_op = st.text_input("Classe Operacional", key="filtro_op")
-        with col4:
-            filtro_marca = st.text_input("Marca", key="filtro_marca")
+    # --- Aba 2: Frotas Cadastradas ---
+    with aba_lista:
+        df = pd.read_sql(f"SELECT * FROM {TABLE}", conn)
 
-        if filtro_frota:
-            df = df[df['num_frota'].str.contains(filtro_frota, case=False, na=False)]
-        if filtro_mec:
-            df = df[df['classe_mecanica'].str.contains(filtro_mec, case=False, na=False)]
-        if filtro_op:
-            df = df[df['classe_operacional'].str.contains(filtro_op, case=False, na=False)]
-        if filtro_marca:
-            df = df[df['marca'].str.contains(filtro_marca, case=False, na=False)]
+        colf1, colf2, colf3, colf4 = st.columns(4)
+        with colf1:
+            f_num_frota = st.text_input("Filtro: Nº da Frota")
+        with colf2:
+            f_mec = st.text_input("Filtro: Classe Mecânica")
+        with colf3:
+            f_op = st.text_input("Filtro: Classe Operacional")
+        with colf4:
+            f_marca = st.text_input("Filtro: Marca")
+        colf5, colf6 = st.columns(2)
+        with colf5:
+            f_status = st.selectbox("Filtro: Status", ["", "Ativo", "Inativo"], index=0)
+        with colf6:
+            f_placa = st.text_input("Filtro: Placa")
 
-        df = df.drop(columns=['id'])  # Oculta a coluna id
+        if not df.empty:
+            if f_num_frota: df = df[df["num_frota"].astype(str).str.contains(f_num_frota, case=False, na=False)]
+            if f_mec:       df = df[df["classe_mecanica"].astype(str).str.contains(f_mec, case=False, na=False)]
+            if f_op:        df = df[df["classe_operacional"].astype(str).str.contains(f_op, case=False, na=False)]
+            if f_marca:     df = df[df["marca"].astype(str).str.contains(f_marca, case=False, na=False)]
+            if f_status:    df = df[df["status"] == f_status]
+            if f_placa:     df = df[df["placa"].astype(str).str.contains(f_placa.strip(), case=False, na=False)]
 
-        # Renomeia as colunas para títulos mais amigáveis
-        df = df.rename(columns={
-            'num_frota': 'Nº Frota',
-            'classe_mecanica': 'Classe Mecânica',
-            'classe_operacional': 'Classe Operacional',
-            'placa': 'Placa',
-            'modelo': 'Modelo',
-            'marca': 'Marca',
-            'ano_fabricacao': 'Ano de Fabricação',
-            'chassi': 'Chassi'
-        })
+            if "id" in df.columns: df = df.drop(columns=["id"])
 
-        if com_expansor:
-            with st.expander("📋 Ver Frotas Cadastradas"):
-                st.dataframe(df, use_container_width=True)
+            friendly = {
+                "num_frota": "Nº da Frota",
+                "classe_mecanica": "Classe Mecânica",
+                "classe_operacional": "Classe Operacional",
+                "placa": "Placa",
+                "modelo": "Modelo",
+                "marca": "Marca",
+                "ano_fabricacao": "Ano de Fabricação",
+                "chassi": "Chassi (VIN)",
+                "status": "Status",
+            }
+            df = df.rename(columns={k: v for k, v in friendly.items() if k in df.columns})
+
+            order = [
+                "Nº da Frota","Placa","Modelo","Marca","Ano de Fabricação",
+                "Classe Mecânica","Classe Operacional","Chassi (VIN)","Status"
+            ]
+            existing = [c for c in order if c in df.columns]
+            other    = [c for c in df.columns if c not in existing]
+            df = df[existing + other]
+
+            # ------- Estilo visual (pílula e chips) -------
+            def pill_placa(val: str):
+                if isinstance(val, str) and val.strip():
+                    return ("background-color:#d9f2d9; color:#0f5132; border:1px solid #99d6a6; "
+                            "border-radius:999px; padding:2px 8px; font-weight:700; text-align:center;")
+                return ""
+            def chip_status(val: str):
+                if isinstance(val, str):
+                    v = val.strip().lower()
+                    if v == "ativo":   return "background-color:#2e7d32; color:white; font-weight:700; text-align:center;"
+                    if v == "inativo": return "background-color:#546e7a; color:white; font-weight:700; text-align:center;"
+                return ""
+
+            styled = df.style
+            if "Placa" in df.columns:  styled = styled.applymap(pill_placa, subset=["Placa"])
+            if "Status" in df.columns: styled = styled.applymap(chip_status, subset=["Status"])
+
+            # Export CSV (visão filtrada)
+            csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("⬇️ Exportar CSV (frota filtrada)", data=csv_bytes,
+                               file_name="frota_filtrada.csv", mime="text/csv", use_container_width=True)
+
+            container = st.expander("📋 Ver Frotas Cadastradas") if com_expansor else st.container()
+            with container:
+                st.dataframe(styled, use_container_width=True)
         else:
-            st.dataframe(df, use_container_width=True)
-
+            st.info("Nenhuma frota encontrada.")
