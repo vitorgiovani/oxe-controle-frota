@@ -24,7 +24,7 @@ apply_config()
 # ===================== Gate de Login =====================
 user = auth.require_login()
 
-# ===================== Reset layout pós-login =====================
+# ===================== Reset de layout pós-login =====================
 st.markdown("""
 <style>
   header[data-testid="stHeader"]   { display:block !important; }
@@ -66,7 +66,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ===================== Estilo do card de usuário fixo + botão SAIR =====================
+# ===================== Card de usuário fixo + botão SAIR =====================
 st.markdown("""
 <style>
   /* Card fixo no topo */
@@ -86,7 +86,7 @@ st.markdown("""
   .user-info .name { font-weight:700; }
   .user-info .meta { color:#cfd8dc; font-size:12px; }
 
-  /* Botão SAIR */
+  /* Botão SAIR (compacto e visível) */
   div[data-testid="stSidebar"] .logout-btn-small button {
     background-color:#ff4d4d !important;
     color:#000000 !important;
@@ -102,6 +102,30 @@ st.markdown("""
   div[data-testid="stSidebar"] .logout-btn-small button:hover {
     background-color:#e63939 !important;
     color:#000000 !important;
+  }
+
+  /* ====== Responsivo (mobile) ====== */
+  @media (max-width: 480px) {
+    section[data-testid="stSidebar"]{
+      width:78vw !important; min-width:78vw !important;
+    }
+    .user-row{ padding:6px 8px !important; border-radius:8px !important; }
+    .user-info .name{ font-size:0.95rem !important; }
+    .user-info .meta{ font-size:0.75rem !important; }
+    .logout-btn-small button{
+      padding:0.25rem 0.5rem !important; font-size:0.75rem !important;
+    }
+    .stRadio [role="radiogroup"] label{
+      padding:0.55rem 0.8rem !important; font-size:0.9rem !important;
+      border-radius:10px !important;
+    }
+    .block-container{ padding-top:0.5rem !important; padding-bottom:1rem !important; }
+    .app-footer{ display:none !important; }
+  }
+  @media (min-width:481px) and (max-width:768px){
+    section[data-testid="stSidebar"]{
+      width:65vw !important; min-width:65vw !important;
+    }
   }
 </style>
 """, unsafe_allow_html=True)
@@ -129,11 +153,11 @@ with st.sidebar:
         """,
         unsafe_allow_html=True
     )
-    if st.button("🚪", key="logout-small", help="Sair"):  # só ícone, com tooltip
+    if st.button("🚪", key="logout-small", help="Sair"):  # ícone com tooltip
         auth.logout()
         st.rerun()
-    st.markdown("</div></div>", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div></div>", unsafe_allow_html=True)  # fecha logout-btn-small + user-row
+    st.markdown('</div>', unsafe_allow_html=True)         # fecha fixed-user-card
 
     st.markdown("---")
 
