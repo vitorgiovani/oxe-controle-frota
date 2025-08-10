@@ -94,13 +94,13 @@ def show(com_expansor=False):
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            filtro_frota = st.text_input("Filtrar por Nº Frota", key="filtro_frota")
+            filtro_frota = st.text_input("Nº Frota", key="filtro_frota")
         with col2:
-            filtro_mec = st.text_input("Filtrar por Classe Mecânica", key="filtro_mec")
+            filtro_mec = st.text_input("Classe Mecânica", key="filtro_mec")
         with col3:
-            filtro_op = st.text_input("Filtrar por Classe Operacional", key="filtro_op")
+            filtro_op = st.text_input("Classe Operacional", key="filtro_op")
         with col4:
-            filtro_marca = st.text_input("Filtrar por Marca", key="filtro_marca")
+            filtro_marca = st.text_input("Marca", key="filtro_marca")
 
         if filtro_frota:
             df = df[df['num_frota'].str.contains(filtro_frota, case=False, na=False)]
