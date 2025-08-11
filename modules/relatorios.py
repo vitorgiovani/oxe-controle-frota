@@ -1,31 +1,41 @@
 # modules/relatorios.py
 from datetime import date, datetime
 from typing import Optional, Tuple
+import sqlite3
 import pandas as pd
 import streamlit as st
-from db import get_conn  # ✅ usa o data.db central
+import altair as alt
 
+# ===== conexão única (usa get_conn do projeto se existir) =====
+def _fallback_conn():
+    return sqlite3.connect("data.db", check_same_thread=False)
+
+try:
+    from db import get_conn  # projeto
+except Exception:
+    def get_conn():
+        return _fallback_conn()
+
+# ======= CSS compacto (cards + tabelas + inputs) =======
 def _inject_css():
     st.markdown("""
     <style>
-      .stApp { background-color: #004d00 !important; color: #ffffff !important; }
-      header[data-testid="stHeader"] { background-color: #004d00 !important; }
-      .stTabs [data-baseweb="tab"] {
-        background-color: #006400 !important; color: #ffffff !important;
-        font-weight: 700; font-size: 16px;
+      .metric-card {
+        background:#eaf8ea; color:#0a2e0a; padding:10px 12px;
+        border-radius:12px; border:1px solid #bfe8bf; min-height:84px;
       }
-      .metric-card { background:#eaf8ea; color:#0a2e0a; padding:14px; border-radius:12px; border:1px solid #bfe8bf; }
-      .metric-val { font-size:28px; font-weight:800; }
-      .metric-lbl { font-size:12px; opacity:.8; text-transform:uppercase; letter-spacing:.6px; }
-      .stDataFrame thead tr th { background-color: #d9f2d9 !important; color: #000000 !important; }
-      .stDataFrame tbody tr td { background-color: #eaf8ea !important; color: #000000 !important; }
-      .stButton>button {
+      .metric-lbl { font-size:12px; opacity:.85; text-transform:uppercase; letter-spacing:.5px; }
+      .metric-val { font-size:26px; font-weight:800; line-height:1.2; }
+      .stDataFrame thead tr th { background:#d9f2d9 !important; color:#000 !important; }
+      .stDataFrame tbody tr td { background:#eaf8ea !important; color:#000 !important; }
+      .stButton>button{
         background:#ffffff !important; color:#004d00 !important; font-weight:700;
         border:0; border-radius:8px;
       }
     </style>
     """, unsafe_allow_html=True)
 
+# ======= helpers =======
 def _fmt_date_iso(d):
     if isinstance(d, date): return d.strftime("%Y-%m-%d")
     if isinstance(d, datetime): return d.date().strftime("%Y-%m-%d")
@@ -37,25 +47,11 @@ def _fmt_br_date_col(df: pd.DataFrame, cols):
             df[c] = pd.to_datetime(df[c], errors="coerce").dt.strftime("%d/%m/%Y").fillna(df[c])
     return df
 
-def _style_chip_status(val: str, mapping: dict):
-    if isinstance(val, str):
-        v = val.strip().lower()
-        color = mapping.get(v)
-        if color:
-            return f"background-color:{color['bg']}; color:{color['fg']}; font-weight:700; text-align:center;"
-    return ""
-
-def _style_pill(val: str):
-    if isinstance(val, str) and val.strip():
-        return ("background-color:#d9f2d9; color:#0f5132; border:1px solid #99d6a6; "
-                "border-radius:999px; padding:2px 8px; font-weight:700; text-align:center;")
-    return ""
-
 def _download_csv_button(df: pd.DataFrame, label: str, fname: str):
     csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button(label, data=csv_bytes, file_name=fname, mime="text/csv", use_container_width=True)
 
-# =================== Carga unificada (data.db) ===================
+# ======= Carga (data.db) =======
 def _load_data():
     with get_conn() as conn:
         df_os = pd.read_sql("""
@@ -142,36 +138,43 @@ def _apply_global_filters(
 
     return df_os, df_man, df_frota
 
-# =================== UI principal ===================
-def show():
+# ======= Gráficos (Altair) =======
+def _bar(df, x, y, title, height=260):
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(x=alt.X(x, sort='-y', title=None), y=alt.Y(y, title=None), tooltip=list(df.columns))
+        .properties(height=height, title=alt.TitleParams(title, anchor='start', color='#fff'))
+        .configure_axis(labelColor='#fff', titleColor='#fff', gridColor='#295429')
+        .configure_view(strokeOpacity=0)
+        .configure_title(color='#fff')
+    )
+    return chart
+
+# ======= UI principal =======
+def show(graphs_only: bool = False):
     _inject_css()
     st.subheader("📊 Relatórios")
 
-    # --- Filtros globais ---
-    colf1, colf2, colf3 = st.columns([2,2,2])
-    with colf1:
-        dt_start = st.date_input("De", value=None)
-    with colf2:
-        dt_end = st.date_input("Até", value=None)
-    with colf3:
-        placa = st.text_input("Placa (contém)", value="")
-    colf4, colf5 = st.columns([2,2])
-    with colf4:
-        num_frota = st.text_input("Nº da Frota (contém)", value="")
-    with colf5:
-        status_os = st.selectbox("Status OS", ["", "aberta", "em execução", "fechada"], index=0)
+    # --- Filtros globais (2 linhas compactas) ---
+    f1, f2, f3 = st.columns([1,1,1.2])
+    with f1: dt_start = st.date_input("De", value=None)
+    with f2: dt_end   = st.date_input("Até", value=None)
+    with f3: placa    = st.text_input("Placa (contém)", value="")
 
-    # --- Carrega dados do data.db ---
+    f4, f5 = st.columns([1,1])
+    with f4: num_frota = st.text_input("Nº da Frota (contém)", value="")
+    with f5: status_os = st.selectbox("Status OS", ["", "aberta", "em execução", "fechada"], index=0)
+
+    # --- Carrega + filtros ---
     df_os, df_man, df_frota = _load_data()
-
-    # --- Aplica filtros globais ---
     df_os, df_man, df_frota = _apply_global_filters(
         df_os, df_man, df_frota,
         (dt_start if dt_start else None, dt_end if dt_end else None),
         status_os, placa, num_frota
     )
 
-    # --- KPIs ---
+    # --- KPIs (compactos) ---
     c1, c2, c3, c4 = st.columns(4)
     total_os = len(df_os) if not df_os.empty else 0
     abertas  = int((df_os.get("status","").astype(str).str.lower() == "aberta").sum()) if not df_os.empty else 0
@@ -189,19 +192,69 @@ def show():
     with c3:
         st.markdown(f'<div class="metric-card"><div class="metric-lbl">Manutenções (total)</div><div class="metric-val">{total_man}</div></div>', unsafe_allow_html=True)
     with c4:
-        st.markdown(f'<div class="metric-card"><div class="metric-lbl">Custo total</div><div class="metric-val">R$ {custo_total:,.2f}</div></div>'.replace(",", "X").replace(".", ",").replace("X","."), unsafe_allow_html=True)
-
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-lbl">Custo total</div>'
+            f'<div class="metric-val">R$ {custo_total:,.2f}</div></div>'.replace(",", "X").replace(".", ",").replace("X","."),
+            unsafe_allow_html=True
+        )
     c5, c6 = st.columns(2)
     with c5:
         st.markdown(f'<div class="metric-card"><div class="metric-lbl">Frota (total)</div><div class="metric-val">{frota_total}</div></div>', unsafe_allow_html=True)
     with c6:
-        st.markmarkdown = st.markdown(f'<div class="metric-card"><div class="metric-lbl">Veículos ativos</div><div class="metric-val">{ativos}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-lbl">Veículos ativos</div><div class="metric-val">{ativos}</div></div>', unsafe_allow_html=True)
 
     st.markdown("---")
 
+    # ================== SOMENTE GRÁFICOS (home) ==================
+    if graphs_only:
+        g1, g2 = st.columns(2)
+
+        with g1:
+            st.markdown("**OS por Status**")
+            if not df_os.empty and "status" in df_os.columns:
+                os_status = (
+                    df_os["status"].astype(str).str.title().value_counts()
+                    .rename_axis("Status").reset_index(name="Qtd")
+                )
+                st.altair_chart(_bar(os_status, "Status", "Qtd", "", height=260), use_container_width=True)
+            else:
+                st.info("Sem dados de OS para este gráfico.")
+
+        with g2:
+            st.markdown("**Manutenções por Tipo**")
+            if not df_man.empty and "tipo" in df_man.columns:
+                man_tipo = (
+                    df_man["tipo"].astype(str).value_counts()
+                    .rename_axis("Tipo").reset_index(name="Qtd")
+                )
+                st.altair_chart(_bar(man_tipo, "Tipo", "Qtd", "", height=260), use_container_width=True)
+            else:
+                st.info("Sem dados de Manutenções para este gráfico.")
+
+        st.markdown("---")
+        st.markdown("**Top 10 Placas por Custo de Manutenção**")
+        if not df_man.empty and {"placa","custo"}.issubset(df_man.columns):
+            rank = df_man.copy()
+            rank["custo"] = pd.to_numeric(rank["custo"], errors="coerce").fillna(0)
+            top = (
+                rank.groupby("placa", dropna=False)["custo"].sum()
+                    .sort_values(ascending=False).head(10)
+                    .rename_axis("Placa").reset_index(name="Custo Total")
+            )
+            st.altair_chart(_bar(top, "Placa", "Custo Total", "", height=280), use_container_width=True)
+
+            # CSV com valores formatados em R$
+            top_fmt = top.copy()
+            top_fmt["Custo Total"] = top_fmt["Custo Total"].map(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X","."))
+            _download_csv_button(top_fmt, "⬇️ Exportar CSV (Top Placas por Custo)", "top_placas_custo.csv")
+        else:
+            st.info("Sem dados para ranking de custo.")
+        return  # fim do modo graphs_only
+
+    # ================== TABELAS (modo completo) ==================
     tab_os, tab_man, tab_frota, tab_grafs = st.tabs(["🧾 OS", "🛠️ Manutenções", "🚛 Frota", "📈 Gráficos"])
 
-    # ====== Tabela OS ======
+    # -- OS --
     with tab_os:
         df = df_os.copy()
         if not df.empty:
@@ -219,30 +272,16 @@ def show():
                 "responsavel":"Responsável","status":"Status",
             }
             df = df.rename(columns={k:v for k,v in friendly.items() if k in df.columns})
-
             order = ["Nº da OS","Nº da Frota","Placa","Data de Abertura","Previsão de Saída","Data de Liberação",
                      "Status","Prioridade","Responsável","Modelo","Marca","Ano de Fabricação","Chassi (VIN)","SC (Chamado)","Orçamento","Descrição do Serviço"]
             exist = [c for c in order if c in df.columns]; other = [c for c in df.columns if c not in exist]
             df = df[exist + other]
-
-            styled = df.style
-            if "Status" in df.columns:
-                os_map = {
-                    "aberta":{"bg":"#2e7d32","fg":"#fff"},
-                    "em execução":{"bg":"#f9a825","fg":"#000"},
-                    "em execucao":{"bg":"#f9a825","fg":"#000"},
-                    "fechada":{"bg":"#546e7a","fg":"#fff"},
-                }
-                styled = styled.applymap(lambda v: _style_chip_status(v, os_map), subset=["Status"])
-            if "Placa" in df.columns:
-                styled = styled.applymap(_style_pill, subset=["Placa"])
-
             _download_csv_button(df, "⬇️ Exportar CSV (OS)", "relatorio_os.csv")
-            st.dataframe(styled, use_container_width=True)
+            st.dataframe(df, use_container_width=True)
         else:
             st.info("Sem dados de OS neste filtro.")
 
-    # ====== Tabela Manutenções ======
+    # -- Manutenções --
     with tab_man:
         df = df_man.copy()
         if not df.empty:
@@ -262,7 +301,7 @@ def show():
             }
             df = df.rename(columns={k:v for k,v in friendly.items() if k in df.columns})
 
-            # Mês legível
+            # Mês amigável
             if "Mês (aaaa-mm)" in df.columns:
                 tmp = pd.to_datetime(df["Mês (aaaa-mm)"]+"-01", errors="coerce")
                 df["Mês"] = tmp.dt.strftime("%b/%y").str.lower()
@@ -272,17 +311,12 @@ def show():
                      "Modelo","Marca","Ano de Fabricação","Chassi (VIN)"]
             exist = [c for c in order if c in df.columns]; other = [c for c in df.columns if c not in exist]
             df = df[exist + other]
-
-            styled = df.style
-            if "Placa" in df.columns:
-                styled = styled.applymap(_style_pill, subset=["Placa"])
-
             _download_csv_button(df, "⬇️ Exportar CSV (Manutenções)", "relatorio_manutencoes.csv")
-            st.dataframe(styled, use_container_width=True)
+            st.dataframe(df, use_container_width=True)
         else:
             st.info("Sem dados de Manutenções neste filtro.")
 
-    # ====== Tabela Frota ======
+    # -- Frota --
     with tab_frota:
         df = df_frota.copy()
         if not df.empty:
@@ -296,33 +330,26 @@ def show():
             order = ["Nº da Frota","Placa","Modelo","Marca","Ano de Fabricação","Classe Mecânica","Classe Operacional","Chassi (VIN)","Status"]
             exist = [c for c in order if c in df.columns]; other = [c for c in df.columns if c not in exist]
             df = df[exist + other]
-
-            styled = df.style
-            if "Placa" in df.columns:
-                styled = styled.applymap(_style_pill, subset=["Placa"])
-
             _download_csv_button(df, "⬇️ Exportar CSV (Frota)", "relatorio_frota.csv")
-            st.dataframe(styled, use_container_width=True)
+            st.dataframe(df, use_container_width=True)
         else:
             st.info("Sem dados de Frota neste filtro.")
 
-    # ====== Gráficos rápidos ======
+    # -- Gráficos (modo completo) --
     with tab_grafs:
         g1, g2 = st.columns(2)
-
         with g1:
             st.markdown("**OS por Status**")
             if not df_os.empty and "status" in df_os.columns:
                 os_status = df_os["status"].astype(str).str.title().value_counts().rename_axis("Status").reset_index(name="Qtd")
-                st.bar_chart(os_status.set_index("Status"))
+                st.altair_chart(_bar(os_status, "Status", "Qtd", "", height=260), use_container_width=True)
             else:
                 st.info("Sem dados de OS para este gráfico.")
-
         with g2:
             st.markdown("**Manutenções por Tipo**")
             if not df_man.empty and "tipo" in df_man.columns:
                 man_tipo = df_man["tipo"].astype(str).value_counts().rename_axis("Tipo").reset_index(name="Qtd")
-                st.bar_chart(man_tipo.set_index("Tipo"))
+                st.altair_chart(_bar(man_tipo, "Tipo", "Qtd", "", height=260), use_container_width=True)
             else:
                 st.info("Sem dados de Manutenções para este gráfico.")
 
@@ -332,12 +359,12 @@ def show():
             rank = df_man.copy()
             rank["custo"] = pd.to_numeric(rank["custo"], errors="coerce").fillna(0)
             top = (rank.groupby("placa", dropna=False)["custo"].sum()
-                        .sort_values(ascending=False)
-                        .head(10)
+                        .sort_values(ascending=False).head(10)
                         .rename_axis("Placa").reset_index(name="Custo Total"))
+            st.altair_chart(_bar(top, "Placa", "Custo Total", "", height=280), use_container_width=True)
+
             top_fmt = top.copy()
             top_fmt["Custo Total"] = top_fmt["Custo Total"].map(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X","."))
             _download_csv_button(top_fmt, "⬇️ Exportar CSV (Top Placas por Custo)", "top_placas_custo.csv")
-            st.bar_chart(top.set_index("Placa"))
         else:
             st.info("Sem dados para ranking de custo.")
