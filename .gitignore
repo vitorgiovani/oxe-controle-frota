@@ -1,16 +1,15 @@
-# Python / temporários
+@"
 venv/
-.venv/
+.env
 __pycache__/
-*.py[cod]
-.DS_Store
-
-# Editor / configs locais
+*/__pycache__/
+*.pyc
+.streamlit/
+data.db
+data_backup.db
+*.sqlite
+*.db
 .vscode/
 .idea/
-.streamlit/secrets.toml
-
-# Bancos de dados (ignora TODOS)
-*.db
-# ...mas mantém o oficial da demo:
-!data.db
+*.log
+"@ > .gitignore
