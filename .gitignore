@@ -1,22 +1,15 @@
-# ==================================
-# AMBIENTE PYTHON / TEMPORÁRIOS
-# ==================================
+# --- Python / temporários ---
 venv/
 .venv/
 __pycache__/
 *.py[cod]
 .DS_Store
 
-# ==================================
-# CONFIGS LOCAIS / EDITOR
-# ==================================
+# --- Editor/Config local ---
 .vscode/
 .idea/
 .streamlit/secrets.toml
 
-# ==================================
-# BANCOS DE DADOS
-# Ignora todos os .db...
+# --- Bancos de dados ---
 *.db
-# ...exceto o banco oficial de demonstração
-!data.db
+!data.db   # mantém APENAS o banco oficial da demo
