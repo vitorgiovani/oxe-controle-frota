@@ -2,7 +2,7 @@
 from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
-from typing import Optional, List, Dict
+from typing import Optional, Dict
 import pandas as pd
 import streamlit as st
 from db import get_conn
@@ -131,64 +131,71 @@ def _fetch_user_where(where_sql: str, params: tuple) -> Optional[User]:
     return User(**row) if row else None
 
 def _get_user_by_login(login: str) -> Optional[User]:
-    # 1) username; 2) email (case-insensitive)
-    u = _fetch_user_where("WHERE username = ?", (login,))
-    if u: return u
-    return _fetch_user_where("WHERE LOWER(email) = LOWER(?)", (login,))
+    login = (login or "").strip()
+    if not login:
+        return None
+    with get_conn() as conn:
+        # username (case-insensitive + trim)
+        row = conn.execute(
+            f"""
+            SELECT id, username, email, nome AS name, role
+            FROM {USERS_TABLE}
+            WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
+            LIMIT 1
+            """,
+            (login,)
+        ).fetchone()
+        if row:
+            return User(**row)
+        # email (case-insensitive + trim)
+        row = conn.execute(
+            f"""
+            SELECT id, username, email, nome AS name, role
+            FROM {USERS_TABLE}
+            WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))
+            LIMIT 1
+            """,
+            (login,)
+        ).fetchone()
+        return User(**row) if row else None
 
 def _verify_password(user: User, pwd: str) -> bool:
+    pwd = (pwd or "")
     expected_hash = _hash_password(pwd)
     with get_conn() as conn:
-        row = conn.execute(f"SELECT senha_hash FROM {USERS_TABLE} WHERE id=?", (user.id,)).fetchone()
+        # Quais colunas existem?
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({USERS_TABLE})")}
+        select_cols = ["senha_hash"]
+        if "hash_senha" in cols:
+            select_cols.append("hash_senha")
+        if "senha" in cols:
+            select_cols.append("senha")
+
+        row = conn.execute(
+            f"SELECT {', '.join(select_cols)} FROM {USERS_TABLE} WHERE id=?",
+            (user.id,)
+        ).fetchone()
         if not row:
             return False
-        saved = row["senha_hash"] or ""
-        # aceita hash SHA-256 ou plain legado (se existir)
-        return (saved == expected_hash) or (saved == pwd)
 
-# ==================== API pública (compat assinaturas) ====================
-def create_user(*args, **kwargs) -> int:
-    """
-    Compat:
-    - create_user(username, name, password, role, active)
-    - create_user(username=?, email=?, name=?, password=?, role='user', active=True)
-    """
-    _ensure_schema()
+        # Valores salvos (ignorando None)
+        saved_values = [(row[c] if isinstance(row, dict) else row[idx]) for idx, c in enumerate(select_cols)]
+        saved_values = [s or "" for s in saved_values]
 
-    # Assinatura simples usada pelo admin_users.py
-    if len(args) in (4, 5) and not kwargs:
-        username, name, password, role = args[:4]
-        active = args[4] if len(args) == 5 else True
-        email = None
-    else:
-        username = kwargs.get("username")
-        email    = kwargs.get("email")
-        name     = kwargs.get("name")
-        password = kwargs.get("password")
-        role     = kwargs.get("role", "user")
-        active   = kwargs.get("active", True)
+        # 1) Bate com SHA-256
+        if expected_hash in saved_values:
+            # garante migração p/ senha_hash se estiver faltando
+            if "senha_hash" in select_cols and (row["senha_hash"] if isinstance(row, dict) else saved_values[select_cols.index("senha_hash")]) != expected_hash:
+                conn.execute(f"UPDATE {USERS_TABLE} SET senha_hash=? WHERE id=?", (expected_hash, user.id))
+            return True
 
-    if not username or not password:
-        raise ValueError("Usuário e senha são obrigatórios.")
-    if len(password) < 4:
-        raise ValueError("Senha muito curta (mín. 4).")
+        # 2) Bate com texto puro legado
+        if pwd in saved_values:
+            # migra para senha_hash
+            conn.execute(f"UPDATE {USERS_TABLE} SET senha_hash=? WHERE id=?", (expected_hash, user.id))
+            return True
 
-    role = (role or "user").lower()
-    username = (username or "").strip().lower()
-    email = (email or "").strip().lower() or None
-    name = (name or "").strip()
-
-    with get_conn() as conn:
-        conn.execute(
-            f"""INSERT INTO {USERS_TABLE} (username, email, nome, senha_hash, role, active)
-                VALUES (?, ?, ?, ?, ?, ?)""",
-            (username, email, name, _hash_password(password), role, 1 if active else 0)
-        )
-        new_id = conn.execute("SELECT last_insert_rowid() AS id;").fetchone()["id"]
-    return new_id
-
-def logout():
-    st.session_state.pop("auth_user", None)
+    return False
 
 # ==================== UI (login) ====================
 def login_form():
@@ -334,5 +341,5 @@ def delete_user(user_id: int) -> None:
     with get_conn() as conn:
         conn.execute(f"DELETE FROM {USERS_TABLE} WHERE id = ?;", (user_id,))
 
-# (opcional) alias de compatibilidade
+# alias de compat
 ensure_schema = _ensure_schema
