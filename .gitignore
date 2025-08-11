@@ -1,15 +1,16 @@
-# --- Python / temporários ---
+# Python / temporários
 venv/
 .venv/
 __pycache__/
 *.py[cod]
 .DS_Store
 
-# --- Editor/Config local ---
+# Editor / configs locais
 .vscode/
 .idea/
 .streamlit/secrets.toml
 
-# --- Bancos de dados ---
+# Bancos de dados (ignora TODOS)
 *.db
-!data.db   # mantém APENAS o banco oficial da demo
+# ...mas mantém o oficial da demo:
+!data.db
