@@ -3,6 +3,7 @@ import subprocess
 from datetime import datetime
 import base64
 import streamlit as st
+import inspect  # <- precisa para o helper
 
 from config import apply_config
 from db import bootstrap
@@ -21,6 +22,16 @@ def get_git_commit_hash():
         return commit_hash
     except Exception:
         return "no-git"
+
+# --- helper: chama .show() só com kwargs suportados (evita TypeError no deploy)
+def call_show(fn, **kwargs):
+    try:
+        sig = inspect.signature(fn)
+        allowed = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        return fn(**allowed)
+    except Exception:
+        # se não der pra inspecionar ou ainda assim der ruim, chama sem kwargs
+        return fn()
 
 
 # ===================== Config & Bootstrap =====================
@@ -109,7 +120,7 @@ st.markdown("""
   main .block-container{
     width: calc(100vw - 290px) !important;   /* 270 da sidebar + ~20 de respiro */
     max-width:none !important;
-    margin:0 !important; padding:.55rem 1.2rem !important;  /* “sobe” o conteúdo */
+    margin:0 !important; padding:.55rem 1.2rem !important;
   }
 
   /* ===== Menos espaços verticais no miolo ===== */
@@ -180,7 +191,8 @@ with st.sidebar:
 menu = st.session_state.get("menu", "Início")
 
 if menu == "Início":
-    relatorios.show(graphs_only=True)
+    # call_show evita TypeError quando a função não aceita graphs_only
+    call_show(relatorios.show, graphs_only=True)
 
 elif menu == "Frota":
     desired = st.session_state.get("frota_tab", "Listar/Editar")
@@ -203,7 +215,8 @@ elif menu == "Ordens de Serviço":
     abertura_os.show()
 
 elif menu == "Manutenção":
-    manutencao.show(com_expansor=True)
+    # idem para com_expansor
+    call_show(manutencao.show, com_expansor=True)
 
 elif menu == "Admin (Usuários)":
     from modules import admin_users
