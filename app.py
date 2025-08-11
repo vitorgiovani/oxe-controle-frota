@@ -4,8 +4,11 @@ from datetime import datetime
 import streamlit as st
 from config import apply_config
 from modules import auth, cadastro_frota, abertura_os, manutencao, relatorios
+from db import bootstrap
+
 
 APP_VERSION = "1.0.0"
+
 
 # ===================== Função para obter hash curto do commit =====================
 def get_git_commit_hash():
@@ -20,6 +23,8 @@ def get_git_commit_hash():
 
 # ===================== Config & Tema =====================
 apply_config()
+
+bootstrap()  # cria/migra tabelas no data.db ANTES de qualquer query
 
 # ===================== Gate de Login =====================
 user = auth.require_login()

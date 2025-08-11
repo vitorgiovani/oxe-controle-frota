@@ -1,180 +1,174 @@
 import sqlite3
 import hashlib
-import random
 from datetime import datetime, timedelta
+import random
 
-DB_PATH = "data.db"
+# Função para gerar hash SHA-256 da senha
+def hash_password(password):
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
-def sha256(s: str) -> str:
-    return hashlib.sha256(s.encode()).hexdigest()
+# Conecta/cria o banco
+conn = sqlite3.connect("data.db")
+cur = conn.cursor()
 
-def create_tables(cur):
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS usuarios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        nome TEXT NOT NULL,
-        hash_senha TEXT NOT NULL,
-        role TEXT NOT NULL CHECK(role IN ('admin','user','viewer')),
-        ativo INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL
-    );
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS veiculos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        placa TEXT UNIQUE NOT NULL,
-        modelo TEXT NOT NULL,
-        ano INTEGER,
-        status TEXT NOT NULL DEFAULT 'ativo', -- ativo, manutencao, inativo
-        criado_em TEXT NOT NULL
-    );
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS ordens_servico (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        veiculo_id INTEGER NOT NULL,
-        descricao TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'aberta', -- aberta, em_andamento, fechada
-        aberto_em TEXT NOT NULL,
-        fechado_em TEXT,
-        responsavel_id INTEGER,
-        FOREIGN KEY (veiculo_id) REFERENCES veiculos(id),
-        FOREIGN KEY (responsavel_id) REFERENCES usuarios(id)
-    );
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS manutencoes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        veiculo_id INTEGER NOT NULL,
-        tipo TEXT NOT NULL,   -- preventiva, corretiva
-        custo REAL,
-        data TEXT NOT NULL,
-        obs TEXT,
-        FOREIGN KEY (veiculo_id) REFERENCES veiculos(id)
-    );
-    """)
+# ===== Criação das tabelas =====
+cur.execute("""
+CREATE TABLE IF NOT EXISTS usuarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL,
+    nome TEXT NOT NULL,
+    senha_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+)
+""")
 
-def seed_usuarios(cur, n=30):
-    nomes = [
-        "Ana", "Bruno", "Carla", "Diego", "Eduarda", "Felipe", "Gabriela", "Henrique",
-        "Isabela", "João", "Karina", "Lucas", "Mariana", "Natan", "Olivia", "Paulo",
-        "Queila", "Rafael", "Sofia", "Thiago", "Ursula", "Valter", "Wesley", "Xavier",
-        "Yara", "Zilda", "Beto", "Cris", "Dani", "Elias"
-    ]
-    roles = ["user", "viewer", "user", "user", "viewer"]
-    base = datetime.now() - timedelta(days=120)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS veiculos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    placa TEXT NOT NULL,
+    modelo TEXT NOT NULL,
+    ano INTEGER,
+    status TEXT NOT NULL DEFAULT 'ativo',
+    criado_em TEXT NOT NULL,
+    num_frota TEXT,
+    marca TEXT,
+    ano_fabricacao TEXT,
+    chassi TEXT,
+    classe_mecanica TEXT,
+    classe_operacional TEXT
+)
+""")
 
-    # garante um admin
-    cur.execute("SELECT COUNT(1) FROM usuarios WHERE username='admin'")
-    if cur.fetchone()[0] == 0:
-        cur.execute("""
-            INSERT INTO usuarios(username, nome, hash_senha, role, ativo, created_at)
-            VALUES (?, ?, ?, 'admin', 1, ?)
-        """, ("admin", "Administrador", sha256("admin123"), base.isoformat()))
-    # gera mais usuários
-    for i in range(n):
-        u = f"user{i+1:02d}"
-        nome = nomes[i % len(nomes)] + f" {random.choice(['Silva','Souza','Lima','Costa','Almeida'])}"
-        role = random.choice(roles)
-        created = (base + timedelta(days=random.randint(0, 120))).isoformat()
-        try:
-            cur.execute("""
-                INSERT INTO usuarios(username, nome, hash_senha, role, ativo, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (u, nome, sha256("123"), role, 1, created))
-        except sqlite3.IntegrityError:
-            pass  # se já existir, ignora
+cur.execute("""
+CREATE TABLE IF NOT EXISTS ordens_servico (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    veiculo_id INTEGER,
+    data_abertura TEXT,
+    num_os TEXT,
+    placa TEXT,
+    descricao TEXT,
+    prioridade TEXT,
+    sc TEXT,
+    orcamento REAL,
+    previsao_saida TEXT,
+    data_liberacao TEXT,
+    responsavel TEXT,
+    status TEXT,
+    FOREIGN KEY (veiculo_id) REFERENCES veiculos (id)
+)
+""")
 
-def seed_veiculos(cur, n=30):
-    modelos = ["Hilux", "Strada", "Fiorino", "S10", "Ducato", "Sprinter", "Toro", "Duster Oroch"]
-    status_opts = ["ativo", "manutencao", "ativo", "ativo", "inativo"]
-    base = datetime.now() - timedelta(days=200)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS manutencoes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    veiculo_id INTEGER,
+    placa TEXT,
+    data TEXT,
+    mes TEXT,
+    sc TEXT,
+    tipo TEXT,
+    cod_peca TEXT,
+    desc_peca TEXT,
+    qtd INTEGER,
+    vlr_unitario REAL,
+    fornecedor TEXT,
+    nf TEXT,
+    vlr_peca REAL,
+    FOREIGN KEY (veiculo_id) REFERENCES veiculos (id)
+)
+""")
 
-    for i in range(n):
-        placa = f"{random.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ')}{random.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ')}{random.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ')}-{random.randint(1000,9999)}"
-        modelo = random.choice(modelos)
-        ano = random.randint(2010, 2024)
-        status = random.choice(status_opts)
-        criado = (base + timedelta(days=random.randint(0, 200))).isoformat()
-        try:
-            cur.execute("""
-                INSERT INTO veiculos(placa, modelo, ano, status, criado_em)
-                VALUES (?, ?, ?, ?, ?)
-            """, (placa, modelo, ano, status, criado))
-        except sqlite3.IntegrityError:
-            pass
+# ===== Inserindo usuários =====
+usuarios = [
+    ("admin", "admin@teste.com", "Administrador", hash_password("admin123"), "admin", 1, datetime.now().isoformat()),
+    ("user01", "user01@teste.com", "Usuário 01", hash_password("teste123"), "user", 1, datetime.now().isoformat()),
+    ("user02", "user02@teste.com", "Usuário 02", hash_password("teste123"), "user", 1, datetime.now().isoformat())
+]
+cur.executemany("""
+INSERT INTO usuarios (username, email, nome, senha_hash, role, active, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+""", usuarios)
 
-def seed_os(cur, n=30):
-    # pega ids existentes
-    cur.execute("SELECT id FROM veiculos")
-    veic_ids = [r[0] for r in cur.fetchall()]
-    cur.execute("SELECT id FROM usuarios")
-    user_ids = [r[0] for r in cur.fetchall()]
-    if not veic_ids or not user_ids:
-        return
+# ===== Inserindo 30 veículos =====
+veiculos = []
+for i in range(1, 31):
+    veiculos.append((
+        f"ABC{i:03d}0",
+        f"Modelo {i}",
+        2010 + (i % 13),
+        "ativo",
+        datetime.now().isoformat(),
+        f"FROTA-{i:03d}",
+        f"Marca {i % 5 + 1}",
+        str(2010 + (i % 13)),
+        f"CHASSI{i:05d}",
+        f"Classe Mecânica {i % 3 + 1}",
+        f"Classe Operacional {i % 4 + 1}"
+    ))
+cur.executemany("""
+INSERT INTO veiculos (
+    placa, modelo, ano, status, criado_em, num_frota, marca, ano_fabricacao, chassi, classe_mecanica, classe_operacional
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+""", veiculos)
 
-    descricoes = [
-        "Troca de óleo", "Revisão de freios", "Alinhamento e balanceamento",
-        "Substituição de pneu", "Verificação elétrica", "Troca de filtros",
-        "Reparo na suspensão", "Diagnóstico de ruídos", "Vazamento identificado"
-    ]
-    status_opts = ["aberta", "em_andamento", "fechada"]
-    base = datetime.now() - timedelta(days=90)
+# ===== Inserindo 10 OS de exemplo =====
+ordens = []
+for i in range(1, 11):
+    veiculo_id = random.randint(1, 30)
+    data_abertura = datetime.now() - timedelta(days=random.randint(0, 60))
+    ordens.append((
+        veiculo_id,
+        data_abertura.isoformat(),
+        f"OS-{1000 + i}",
+        f"ABC{veiculo_id:03d}0",
+        f"Reparo geral no veículo {veiculo_id}",
+        random.choice(["Alta", "Média", "Baixa"]),
+        f"SC-{i:03d}",
+        round(random.uniform(500, 5000), 2),
+        (data_abertura + timedelta(days=5)).isoformat(),
+        (data_abertura + timedelta(days=7)).isoformat(),
+        random.choice(["João", "Maria", "Carlos"]),
+        random.choice(["Aberta", "Em execução", "Fechada"])
+    ))
+    
+cur.executemany("""
+INSERT INTO ordens_servico (
+    veiculo_id, data_abertura, num_os, placa, descricao, prioridade, sc, orcamento,
+    previsao_saida, data_liberacao, responsavel, status
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+""", ordens)
 
-    for _ in range(n):
-        veiculo_id = random.choice(veic_ids)
-        descricao = random.choice(descricoes)
-        status = random.choices(status_opts, weights=[4,3,3], k=1)[0]
-        aberto = base + timedelta(days=random.randint(0, 90))
-        fechado = None
-        resp_id = random.choice(user_ids)
-        if status == "fechada":
-            fechado = aberto + timedelta(days=random.randint(0, 10))
-        cur.execute("""
-            INSERT INTO ordens_servico(veiculo_id, descricao, status, aberto_em, fechado_em, responsavel_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (veiculo_id, descricao, status, aberto.isoformat(), fechado.isoformat() if fechado else None, resp_id))
+# ===== Inserindo 15 manutenções de exemplo =====
+manutencoes = []
+for i in range(1, 16):
+    veiculo_id = random.randint(1, 30)
+    data_manut = datetime.now() - timedelta(days=random.randint(0, 180))
+    manutencoes.append((
+        veiculo_id,
+        f"ABC{veiculo_id:03d}0",
+        data_manut.isoformat(),
+        data_manut.strftime("%m/%Y"),
+        f"SC-MAN-{i:03d}",
+        random.choice(["Preventiva", "Corretiva"]),
+        f"PC-{i:04d}",
+        f"Peça exemplo {i}",
+        random.randint(1, 5),
+        round(random.uniform(50, 500), 2),
+        f"Fornecedor {random.randint(1, 5)}",
+        f"NF-{10000 + i}",
+        round(random.uniform(100, 2000), 2)
+    ))
+cur.executemany("""
+INSERT INTO manutencoes (
+    veiculo_id, placa, data, mes, sc, tipo, cod_peca, desc_peca, qtd, vlr_unitario,
+    fornecedor, nf, vlr_peca
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+""", manutencoes)
 
-def seed_manutencoes(cur, n=30):
-    cur.execute("SELECT id FROM veiculos")
-    veic_ids = [r[0] for r in cur.fetchall()]
-    if not veic_ids:
-        return
-    tipos = ["preventiva", "corretiva"]
-    base = datetime.now() - timedelta(days=180)
+conn.commit()
+conn.close()
 
-    for _ in range(n):
-        veiculo_id = random.choice(veic_ids)
-        tipo = random.choice(tipos)
-        custo = round(random.uniform(150, 3500), 2)
-        data = (base + timedelta(days=random.randint(0, 180))).date().isoformat()
-        obs = random.choice([
-            "Peças substituídas", "Ajustes finos", "Retorno em garantia",
-            "Check-list completo", "Reparo emergencial", "Diagnóstico concluído"
-        ])
-        cur.execute("""
-            INSERT INTO manutencoes(veiculo_id, tipo, custo, data, obs)
-            VALUES (?, ?, ?, ?, ?)
-        """, (veiculo_id, tipo, custo, data, obs))
-
-def main():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    create_tables(cur)
-    seed_usuarios(cur, n=30)
-    seed_veiculos(cur, n=30)
-    seed_os(cur, n=30)
-    seed_manutencoes(cur, n=30)
-    conn.commit()
-
-    # mostra contagens
-    for tab in ["usuarios", "veiculos", "ordens_servico", "manutencoes"]:
-        cur.execute(f"SELECT COUNT(1) FROM {tab}")
-        print(f"{tab}: {cur.fetchone()[0]} registros")
-
-    conn.close()
-    print(f"\nOK! Banco populado em {DB_PATH}")
-
-if __name__ == "__main__":
-    main()
+print("Banco criado e populado com sucesso!")

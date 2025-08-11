@@ -1,5 +1,6 @@
 import streamlit as st
 from modules import auth
+import pandas as pd
 
 def _inject_css():
     st.markdown("""

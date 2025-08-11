@@ -1,204 +1,338 @@
 # modules/auth.py
-import os, binascii, hashlib, sqlite3
-from datetime import datetime
+from __future__ import annotations
+import hashlib
+from dataclasses import dataclass
+from typing import Optional, List, Dict
+import pandas as pd
 import streamlit as st
+from db import get_conn
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH  = os.path.join(BASE_DIR, "data.db")  # unificado
-TABLE    = "users"
+USERS_TABLE = "usuarios"
 
-# ================= Hash seguro (PBKDF2-SHA256) =================
-_ITER = 120_000
+# ==================== Model ====================
+@dataclass
+class User:
+    id: int
+    username: Optional[str]
+    email: Optional[str]
+    name: Optional[str]
+    role: Optional[str]
 
-def _hash_password(password: str) -> str:
-    salt = os.urandom(16)
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _ITER)
-    return f"pbkdf2_sha256${_ITER}${binascii.hexlify(salt).decode()}${binascii.hexlify(dk).decode()}"
+    def as_dict(self) -> Dict:
+        return {
+            "id": self.id,
+            "username": (self.username or "").strip(),
+            "email": (self.email or "").strip(),
+            "name": (self.name or "").strip(),
+            "role": (self.role or "user").lower(),
+        }
 
-def _verify_password(password: str, stored: str) -> bool:
-    try:
-        algo, iter_s, salt_hex, hash_hex = stored.split("$")
-        assert algo == "pbkdf2_sha256"
-        iters = int(iter_s)
-        salt  = binascii.unhexlify(salt_hex.encode())
-        dk    = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iters)
-        return binascii.hexlify(dk).decode() == hash_hex
-    except Exception:
-        return False
-
-# ================= Infra / SQLite =================
-@st.cache_resource
-def _conn():
-    folder = os.path.dirname(DB_PATH)
-    if folder:
-        os.makedirs(folder, exist_ok=True)
-    c = sqlite3.connect(DB_PATH, check_same_thread=False)
-    c.execute("PRAGMA foreign_keys = ON;")
-    return c
-
-def _ensure_table():
-    con = _conn()
-    con.execute(f"""
-      CREATE TABLE IF NOT EXISTS {TABLE} (
-        username   TEXT PRIMARY KEY,
-        name       TEXT,
-        password   TEXT NOT NULL,
-        role       TEXT DEFAULT 'user',
-        active     INTEGER DEFAULT 1,
-        created_at TEXT
-      );
-    """)
-    con.commit()
-
-def _ensure_default_admin():
-    """Cria admin inicial (env -> fallback)."""
-    con = _conn()
-    cur = con.execute(f"SELECT COUNT(*) FROM {TABLE};").fetchone()
-    if cur and cur[0] == 0:
-        admin_user = os.getenv("ADMIN_USER", "admin").lower().strip()
-        admin_pwd  = os.getenv("ADMIN_PASSWORD", "admin123")
-        con.execute(
-            f"INSERT INTO {TABLE} (username, name, password, role, active, created_at) VALUES (?,?,?,?,?,?)",
-            (admin_user, "Administrador", _hash_password(admin_pwd), "admin", 1, datetime.utcnow().isoformat())
-        )
-        con.commit()
-
-def _ensure_demo_user():
-    """Usuário de demonstração (remova em produção se quiser)."""
-    con = _conn()
-    demo_user = "apresentacao"
-    demo_pwd  = "oxe2025"
-    row = con.execute(f"SELECT 1 FROM {TABLE} WHERE username=?;", (demo_user,)).fetchone()
-    if not row:
-        con.execute(
-            f"INSERT INTO {TABLE} (username,name,password,role,active,created_at) VALUES (?,?,?,?,?,?)",
-            (demo_user, "Usuário de Demonstração", _hash_password(demo_pwd), "user", 1, datetime.utcnow().isoformat())
-        )
-        con.commit()
-
-# ================= API Pública =================
-def init_auth():
-    _ensure_table()
-    _ensure_default_admin()
-    _ensure_demo_user()
-
-def login_form():
-    # CSS mínimo e estável (só fundo/cores; nada de wrappers)
+# ==================== Visual (login card translúcido) ====================
+def _inject_login_css():
     st.markdown("""
     <style>
-      header[data-testid="stHeader"], section[data-testid="stSidebar"] { display:none !important; }
-      .stApp, .main, .block-container, [data-testid="stAppViewContainer"] {
-        background: linear-gradient(180deg, #0b3d0b 0%, #0e5a0e 100%) !important;
+      /* tirar padding e sumir header/sidebar */
+      .block-container{padding-top:0 !important;padding-bottom:0 !important;max-width:100% !important;}
+      header[data-testid="stHeader"]{display:none !important;}
+      section[data-testid="stSidebar"]{display:none !important;}
+
+      /* fundo e centralização vertical */
+      .stApp{
+        background:linear-gradient(180deg,#0b3d0b 0%, #0a330a 50%, #0b3d0b 100%) !important;
+        min-height:100vh !important; display:flex; align-items:center; justify-content:center;
       }
-      .login-title  { text-align:center; font-weight:800; font-size:22px; color:#eaffec; margin:6px 0 4px; }
-      .login-sub    { text-align:center; font-size:13px;  color:#dff7e1; margin-bottom:14px; }
-      .stTextInput>div>div>input, .stPassword>div>div>input {
-        height:40px!important; font-size:15px!important; border-radius:9999px!important;
-        background:#fff!important; color:#0c140c!important;
+
+      /* wrapper central para limitar largura */
+      .login-wrap{ width:100%; max-width:900px; margin:0 auto; padding:24px; }
+
+      /* card = o próprio form */
+      form.st-form{
+        width:100%; max-width:760px; margin:0 auto;
+        background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.18);
+        border-radius:16px; padding:24px !important; box-shadow:0 10px 28px rgba(0,0,0,.35);
+        backdrop-filter: blur(4px);
       }
+
+      /* topo (logo + textos) */
+      .login-logo{ text-align:center; margin-bottom:10px; }
+      .login-title{ text-align:center; font-weight:800; font-size:28px; color:#fff; margin:4px 0 2px; }
+      .login-sub{ text-align:center; font-size:13px; color:#d2e7d2; margin-bottom:18px; }
+
+      /* cores de labels */
+      label, .stMarkdown p, .stCheckbox label{ color:#e9f5e9 !important; }
+
+      /* inputs em pílula */
+      .stTextInput input, .stPassword input{
+        background:#fff !important; color:#0a2e0a !important;
+        border:0 !important; border-radius:999px !important; padding:.9rem 1rem !important;
+        box-shadow: inset 0 0 0 1px #cfe7cf;
+      }
+
+      /* botão entrar, central e largo */
       .stButton>button{
-        width:100%; height:44px; border-radius:9999px;
-        background:#2e7d32!important; color:#fff!important; font-weight:700; font-size:15px;
-        border:0;
+        display:block; margin:8px auto 0 auto; width:60%;
+        background:linear-gradient(180deg,#2e7d32 0%, #1b5e20 100%) !important;
+        color:#fff !important; font-weight:800 !important; border:0 !important; border-radius:999px !important;
+        padding:.9rem 1rem !important; box-shadow:0 3px 10px rgba(0,0,0,.25);
       }
       .stButton>button:hover{ filter:brightness(1.06); }
-      .login-foot { text-align:center; font-size:12px; color:#cfead3; margin-top:10px; }
+
+      /* rodapé */
+      .login-footer{ color:#cfe7cf; font-size:12px; margin-top:14px; text-align:center; }
+      .login-footer b{ color:#fff; }
+
+      /* responsivo */
+      @media(max-width:640px){
+        form.st-form{ max-width: 94vw; padding:18px !important; }
+        .stButton>button{ width:100%; }
+      }
     </style>
     """, unsafe_allow_html=True)
 
-    # Layout: 3 colunas para centralizar e limitar a largura
-    left, center, right = st.columns([1, 0.9, 1])  # a coluna do meio ~40% da tela
+# ==================== Infra & schema ====================
+def _hash_password(pwd: str) -> str:
+    return hashlib.sha256(pwd.encode("utf-8")).hexdigest()
 
-    with center:
-        # Logo centralizado
-        from os.path import exists
-        logo_path = "assets/oxe.logo.png"
-        if exists(logo_path):
-            st.image(logo_path, use_container_width=False, width=210)
+def _ensure_schema():
+    """Garante colunas/índices e adiciona campos usados pelo admin (active/created_at)."""
+    with get_conn() as conn:
+        conn.execute(f"CREATE TABLE IF NOT EXISTS {USERS_TABLE} (id INTEGER PRIMARY KEY AUTOINCREMENT);")
+
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({USERS_TABLE})")}
+        if "email" not in cols:
+            conn.execute(f"ALTER TABLE {USERS_TABLE} ADD COLUMN email TEXT;")
+        if "senha_hash" not in cols:
+            conn.execute(f"ALTER TABLE {USERS_TABLE} ADD COLUMN senha_hash TEXT;")
+        if "nome" not in cols:
+            conn.execute(f"ALTER TABLE {USERS_TABLE} ADD COLUMN nome TEXT;")
+        if "username" not in cols:
+            conn.execute(f"ALTER TABLE {USERS_TABLE} ADD COLUMN username TEXT;")
+        if "role" not in cols:
+            conn.execute(f"ALTER TABLE {USERS_TABLE} ADD COLUMN role TEXT DEFAULT 'user';")
+        if "active" not in cols:
+            conn.execute(f"ALTER TABLE {USERS_TABLE} ADD COLUMN active INTEGER DEFAULT 1;")
+        if "created_at" not in cols:
+            conn.execute(f"ALTER TABLE {USERS_TABLE} ADD COLUMN created_at TEXT DEFAULT (datetime('now'));")
+
+        # índices
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({USERS_TABLE})")}
+        if "email" in cols:
+            conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_usuarios_email ON {USERS_TABLE}(email);")
+        if "username" in cols:
+            conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_usuarios_username ON {USERS_TABLE}(username);")
+
+# ==================== Queries/helpers ====================
+def _fetch_user_where(where_sql: str, params: tuple) -> Optional[User]:
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT id, username, email, nome AS name, role FROM {USERS_TABLE} {where_sql} LIMIT 1;",
+            params
+        ).fetchone()
+    return User(**row) if row else None
+
+def _get_user_by_login(login: str) -> Optional[User]:
+    # 1) username; 2) email (case-insensitive)
+    u = _fetch_user_where("WHERE username = ?", (login,))
+    if u: return u
+    return _fetch_user_where("WHERE LOWER(email) = LOWER(?)", (login,))
+
+def _verify_password(user: User, pwd: str) -> bool:
+    expected_hash = _hash_password(pwd)
+    with get_conn() as conn:
+        row = conn.execute(f"SELECT senha_hash FROM {USERS_TABLE} WHERE id=?", (user.id,)).fetchone()
+        if not row:
+            return False
+        saved = row["senha_hash"] or ""
+        # aceita hash SHA-256 ou plain legado (se existir)
+        return (saved == expected_hash) or (saved == pwd)
+
+# ==================== API pública (compat assinaturas) ====================
+def create_user(*args, **kwargs) -> int:
+    """
+    Compat:
+    - create_user(username, name, password, role, active)
+    - create_user(username=?, email=?, name=?, password=?, role='user', active=True)
+    """
+    _ensure_schema()
+
+    # Assinatura simples usada pelo admin_users.py
+    if len(args) in (4, 5) and not kwargs:
+        username, name, password, role = args[:4]
+        active = args[4] if len(args) == 5 else True
+        email = None
+    else:
+        username = kwargs.get("username")
+        email    = kwargs.get("email")
+        name     = kwargs.get("name")
+        password = kwargs.get("password")
+        role     = kwargs.get("role", "user")
+        active   = kwargs.get("active", True)
+
+    if not username or not password:
+        raise ValueError("Usuário e senha são obrigatórios.")
+    if len(password) < 4:
+        raise ValueError("Senha muito curta (mín. 4).")
+
+    role = (role or "user").lower()
+    username = (username or "").strip().lower()
+    email = (email or "").strip().lower() or None
+    name = (name or "").strip()
+
+    with get_conn() as conn:
+        conn.execute(
+            f"""INSERT INTO {USERS_TABLE} (username, email, nome, senha_hash, role, active)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+            (username, email, name, _hash_password(password), role, 1 if active else 0)
+        )
+        new_id = conn.execute("SELECT last_insert_rowid() AS id;").fetchone()["id"]
+    return new_id
+
+def logout():
+    st.session_state.pop("auth_user", None)
+
+# ==================== UI (login) ====================
+def login_form():
+    _inject_login_css()
+
+    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
+    col = st.columns([1,1,1])[1]  # centro
+
+    with col:
+        # logo
+        try:
+            st.image("assets/oxe.logo.png", width=120)
+        except Exception:
+            st.markdown('<div class="login-logo"> </div>', unsafe_allow_html=True)
 
         st.markdown('<div class="login-title">Acesso ao Sistema</div>', unsafe_allow_html=True)
         st.markdown('<div class="login-sub">Informe suas credenciais para continuar</div>', unsafe_allow_html=True)
 
-        # Campos (ficam naturalmente limitados à largura da coluna central)
-        u = st.text_input("Usuário", key="auth_username", placeholder="seu.usuario")
-        p = st.text_input("Senha",   key="auth_password", type="password", placeholder="••••••••")
-        remember = st.checkbox("Manter conectado neste navegador", value=False)
+        with st.form("login_form"):
+            st.text_input("Usuário", key="login_user", placeholder="seu.usuario")
+            st.text_input("Senha", key="login_pwd", type="password", placeholder="••••••••")
+            st.checkbox("Manter conectado neste navegador", key="login_keep", value=False)
+            submitted = st.form_submit_button("Entrar")
 
-        ok = st.button("Entrar", use_container_width=True)
-        st.markdown('<div class="login-foot">Desenvolvido por <strong>NeuralSys</strong> • 2025</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-footer">Desenvolvido por <b>NeuralSys</b> • 2025</div>', unsafe_allow_html=True)
 
-    # Autenticação
-    if ok:
-        username = (u or "").strip().lower()
-        con = _conn()
-        row = con.execute(
-            f"SELECT username,name,password,role,active FROM {TABLE} WHERE username=?;", (username,)
-        ).fetchone()
-        if not row:
-            st.error("Usuário ou senha inválidos."); return False
-        db_username, name, pwd_hash, role, active = row
-        if not active:
-            st.error("Usuário inativo. Fale com o administrador."); return False
-        if not _verify_password(p or "", pwd_hash):
-            st.error("Usuário ou senha inválidos."); return False
+    st.markdown('</div>', unsafe_allow_html=True)
 
-        st.session_state["auth_user"] = {"username": db_username, "name": name, "role": role}
-        st.session_state["auth_remember"] = bool(remember)
-        st.rerun()
-    return False
+    if submitted:
+        _ensure_schema()
+        login = (st.session_state.get("login_user") or "").strip()
+        pwd   = (st.session_state.get("login_pwd") or "")
+        u = _get_user_by_login(login)
+        if not u or not _verify_password(u, pwd):
+            st.error("Usuário/e-mail ou senha inválidos.")
+            return None
+        return u
+    return None
 
-def require_login():
-    init_auth()
-    user = st.session_state.get("auth_user")
+def require_login() -> dict:
+    _ensure_schema()
+    # sessão ativa?
+    if "auth_user" in st.session_state and st.session_state["auth_user"]:
+        return st.session_state["auth_user"]
+
+    # primeiro acesso: criar admin
+    with get_conn() as conn:
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM {USERS_TABLE};").fetchone()["c"]
+
+    if total == 0:
+        _inject_login_css()
+        st.markdown('<div class="login-logo"><img src="assets/oxe.logo.png" width="140"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">Acesso ao Sistema</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-sub">Crie o usuário administrador inicial</div>', unsafe_allow_html=True)
+
+        with st.form("create_first_admin"):
+            username = st.text_input("Usuário (obrigatório)").strip().lower()
+            email    = st.text_input("E-mail (opcional)").strip().lower()
+            name     = st.text_input("Nome").strip()
+            pwd1     = st.text_input("Senha", type="password")
+            pwd2     = st.text_input("Confirmar senha", type="password")
+            submitted = st.form_submit_button("Criar admin")
+        if submitted:
+            if not username or not pwd1:
+                st.error("Usuário e senha são obrigatórios.")
+            elif pwd1 != pwd2:
+                st.error("As senhas não conferem.")
+            else:
+                try:
+                    uid = create_user(username=username, email=email or None, name=name, password=pwd1, role="admin", active=True)
+                    st.success(f"Admin criado (id={uid}). Faça login abaixo.")
+                except Exception as e:
+                    st.error(f"Não foi possível criar o admin: {e}")
+        st.markdown('<div class="login-footer">Desenvolvido por <b>NeuralSys</b> • 2025</div>', unsafe_allow_html=True)
+        st.stop()
+
+    user = login_form()
     if user:
-        return user
-    login_form()
+        st.session_state["auth_user"] = user.as_dict()
+        st.rerun()
     st.stop()
 
-def is_logged_in() -> bool:
-    return "auth_user" in st.session_state
+# ==================== Admin helpers (CRUD para admin_users.py) ====================
+def list_users() -> pd.DataFrame:
+    """Retorna DataFrame com colunas esperadas pelo admin (id, username, email, name, role, active, created_at)."""
+    _ensure_schema()
+    with get_conn() as conn:
+        rows = conn.execute(f"""
+            SELECT id, username, email, nome AS name, role, active, created_at
+            FROM {USERS_TABLE}
+            ORDER BY id ASC
+        """).fetchall()
+    df = pd.DataFrame(rows, columns=["id","username","email","name","role","active","created_at"])
+    return df
 
-def current_user() -> dict | None:
-    return st.session_state.get("auth_user")
+def get_user_by_id(user_id: int) -> Optional[User]:
+    return _fetch_user_where("WHERE id = ?", (user_id,))
 
-def logout():
-    for k in ["auth_user", "auth_remember", "auth_username", "auth_password"]:
-        if k in st.session_state:
-            del st.session_state[k]
-    st.rerun()
+def update_user(user_id: int, *, username: Optional[str] = None,
+                email: Optional[str] = None, name: Optional[str] = None,
+                role: Optional[str] = None, active: Optional[bool] = None) -> None:
+    """Atualiza campos do usuário por id (apenas os informados)."""
+    _ensure_schema()
+    sets, vals = [], []
+    if username is not None:
+        sets.append("username = ?"); vals.append(username.strip().lower() or None)
+    if email is not None:
+        sets.append("email = ?"); vals.append((email or "").strip().lower() or None)
+    if name is not None:
+        sets.append("nome = ?"); vals.append((name or "").strip() or None)
+    if role is not None:
+        sets.append("role = ?"); vals.append((role or "user").lower())
+    if active is not None:
+        sets.append("active = ?"); vals.append(1 if active else 0)
+    if not sets:
+        return
+    vals.append(user_id)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE {USERS_TABLE} SET {', '.join(sets)} WHERE id = ?;", vals)
 
-# ================= Helpers de administração =================
-def create_user(username: str, name: str, password: str, role: str = "user", active: bool = True):
-    username = (username or "").strip().lower()
-    con = _conn()
-    con.execute(
-        f"INSERT INTO {TABLE} (username,name,password,role,active,created_at) VALUES (?,?,?,?,?,?)",
-        (username, name.strip(), _hash_password(password), role, 1 if active else 0, datetime.utcnow().isoformat())
-    )
-    con.commit()
+def set_password(username: str, new_password: str) -> None:
+    """Altera a senha pelo username (usado no admin)."""
+    if not new_password or len(new_password) < 4:
+        raise ValueError("Senha muito curta (mín. 4).")
+    new_hash = _hash_password(new_password)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE {USERS_TABLE} SET senha_hash = ? WHERE username = ?;", (new_hash, username))
+        # sincroniza coluna legada se existir
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({USERS_TABLE})")}
+        if "hash_senha" in cols:
+            conn.execute(f"UPDATE {USERS_TABLE} SET hash_senha = ? WHERE username = ?;", (new_hash, username))
 
-def set_password(username: str, new_password: str):
-    username = (username or "").strip().lower()
-    con = _conn()
-    con.execute(f"UPDATE {TABLE} SET password=? WHERE username=?;", (_hash_password(new_password), username))
-    con.commit()
+def set_active(username: str, is_active: bool) -> None:
+    with get_conn() as conn:
+        conn.execute(f"UPDATE {USERS_TABLE} SET active = ? WHERE username = ?;", (1 if is_active else 0, username))
 
-def set_active(username: str, active: bool):
-    username = (username or "").strip().lower()
-    con = _conn()
-    con.execute(f"UPDATE {TABLE} SET active=? WHERE username=?;", (1 if active else 0, username))
-    con.commit()
+def set_role(username: str, role: str) -> None:
+    role = (role or "user").lower()
+    with get_conn() as conn:
+        conn.execute(f"UPDATE {USERS_TABLE} SET role = ? WHERE username = ?;", (role, username))
 
-def set_role(username: str, role: str):
-    username = (username or "").strip().lower()
-    role = (role or "user").strip().lower()
-    if role not in ("user", "admin"):
-        role = "user"
-    con = _conn()
-    con.execute(f"UPDATE {TABLE} SET role=? WHERE username=?;", (role, username))
-    con.commit()
+def delete_user(user_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute(f"DELETE FROM {USERS_TABLE} WHERE id = ?;", (user_id,))
 
-def list_users():
-    import pandas as pd
-    con = _conn()
-    return pd.read_sql(f"SELECT username, name, role, active, created_at FROM {TABLE} ORDER BY username;", con)
+# (opcional) alias de compatibilidade
+ensure_schema = _ensure_schema

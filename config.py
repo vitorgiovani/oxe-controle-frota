@@ -1,5 +1,10 @@
 # config.py
 import streamlit as st
+from pathlib import Path
+
+# data.db na raiz do projeto
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "data.db"
 
 def apply_config():
     """
