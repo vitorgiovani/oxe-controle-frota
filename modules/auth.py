@@ -3,8 +3,9 @@ import os, binascii, hashlib, sqlite3
 from datetime import datetime
 import streamlit as st
 
-DB_PATH = "auth.db"
-TABLE   = "users"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH  = os.path.join(BASE_DIR, "data.db")  # unificado
+TABLE    = "users"
 
 # ================= Hash seguro (PBKDF2-SHA256) =================
 _ITER = 120_000
